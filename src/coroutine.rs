@@ -12,6 +12,7 @@ pub use corosensei::*;
 thread_local! {
     static DELAY_TIME: Box<RefCell<u64>> = Box::new(RefCell::new(0));
     static YIELDER: Box<RefCell<*const c_void>> = Box::new(RefCell::new(std::ptr::null()));
+    static SYSCALL_FLAG: Box<RefCell<bool>> = Box::new(RefCell::new(false));
 }
 
 #[repr(transparent)]
@@ -76,6 +77,25 @@ impl<'a, Param, Yield> OpenYielder<'a, Param, Yield> {
 
     pub(crate) fn clean_delay() {
         DELAY_TIME.with(|boxed| *boxed.borrow_mut() = 0)
+    }
+
+    pub(crate) extern "C" fn syscall(&self, val: Yield) -> Param {
+        OpenYielder::<Param, Yield>::init_syscall_flag();
+        self.suspend(val)
+    }
+
+    fn init_syscall_flag() {
+        SYSCALL_FLAG.with(|boxed| {
+            *boxed.borrow_mut() = true;
+        });
+    }
+
+    pub(crate) fn syscall_flag() -> bool {
+        SYSCALL_FLAG.with(|boxed| *boxed.borrow_mut())
+    }
+
+    pub(crate) fn clean_syscall_flag() {
+        SYSCALL_FLAG.with(|boxed| *boxed.borrow_mut() = false)
     }
 }
 
@@ -183,7 +203,14 @@ impl<'a, Param, Yield, Return> OpenCoroutine<'a, Param, Yield, Return> {
                     CoroutineResult::Return(r)
                 }
             }
-            CoroutineResult::Yield(y) => CoroutineResult::Yield(y),
+            CoroutineResult::Yield(y) => {
+                self.set_status(Status::Suspend);
+                OpenCoroutine::<Param, Yield, Return>::clean_current();
+                //还没执行到10ms就主动yield了，此时需要清理signal
+                //否则下一个协程执行不到10ms就被抢占调度了
+                Monitor::clean_task(Monitor::signal_time());
+                CoroutineResult::Yield(y)
+            }
         }
     }
 

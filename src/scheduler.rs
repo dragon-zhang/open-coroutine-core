@@ -201,25 +201,32 @@ impl Scheduler {
                 //see OpenCoroutine::child_context_func
                 match coroutine.resume() {
                     CoroutineResult::Yield(()) => {
-                        let delay_time = OpenYielder::<&'static mut c_void, ()>::delay_time();
-                        if delay_time > 0 {
-                            //挂起协程到时间轮
-                            coroutine.set_status(Status::Suspend);
+                        if OpenYielder::<&'static mut c_void, ()>::syscall_flag() {
+                            //syscall
                             unsafe {
-                                SUSPEND_TABLE
-                                    .insert(timer_utils::add_timeout_time(delay_time), coroutine);
+                                SYSTEM_CALL_TABLE
+                                    .insert(Box::leak(Box::from(coroutine.get_name())), coroutine);
                             }
-                            OpenYielder::<&'static mut c_void, ()>::clean_delay();
+                            OpenYielder::<&'static mut c_void, ()>::clean_syscall_flag();
                         } else {
-                            //放入就绪队列尾部
-                            self.ready.push_back(coroutine);
+                            let delay_time = OpenYielder::<&'static mut c_void, ()>::delay_time();
+                            if delay_time > 0 {
+                                //挂起协程到时间轮
+                                unsafe {
+                                    SUSPEND_TABLE.insert(
+                                        timer_utils::add_timeout_time(delay_time),
+                                        coroutine,
+                                    );
+                                }
+                                OpenYielder::<&'static mut c_void, ()>::clean_delay();
+                            } else {
+                                //放入就绪队列尾部
+                                self.ready.push_back(coroutine);
+                            }
                         }
                     }
                     CoroutineResult::Return(_) => unreachable!("never have a result"),
                 };
-                //还没执行到10ms就主动yield了，此时需要清理signal
-                //否则下一个协程执行不到10ms就被抢占调度了
-                Monitor::clean_task(start);
                 self.do_schedule();
             }
             None => Scheduler::back_to_main(),
@@ -248,14 +255,6 @@ impl Scheduler {
             }
             Ok(())
         }
-    }
-
-    pub(crate) fn syscall(&self, co_name: &'static str, co: &'static SchedulableCoroutine) {
-        if co_name.is_empty() {
-            return;
-        }
-        co.set_status(Status::SystemCall);
-        unsafe { SYSTEM_CALL_TABLE.insert(co_name, std::ptr::read_unaligned(co)) };
     }
 
     pub(crate) fn resume(&mut self, co_name: &'static str) -> std::io::Result<()> {
