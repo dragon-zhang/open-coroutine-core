@@ -33,6 +33,8 @@ static mut SUSPEND_TABLE: Lazy<TimerList<SchedulableCoroutine>> = Lazy::new(Time
 
 static QUEUE: Lazy<WorkStealQueue<SchedulableCoroutine>> = Lazy::new(WorkStealQueue::default);
 
+static mut RESULT_TABLE: Lazy<HashMap<&str, SchedulableCoroutine>> = Lazy::new(HashMap::new);
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct Scheduler {
@@ -265,6 +267,18 @@ impl Scheduler {
         }
         Ok(())
     }
+
+    pub(crate) fn save_result(co: SchedulableCoroutine) {
+        unsafe {
+            assert!(RESULT_TABLE
+                .insert(Box::leak(Box::from(co.get_name())), co)
+                .is_none())
+        };
+    }
+
+    pub fn get_result(co_name: &'static str) -> Option<SchedulableCoroutine> {
+        unsafe { RESULT_TABLE.remove(&co_name) }
+    }
 }
 
 impl Default for Scheduler {
@@ -337,20 +351,21 @@ mod tests {
         scheduler.try_schedule().expect("try_schedule failed !");
     }
 
+    fn delay(
+    ) -> fn(&OpenYielder<&'static mut c_void, ()>, &'static mut c_void) -> &'static mut c_void {
+        |yielder, _input| {
+            println!("[coroutine] delay");
+            yielder.delay((), 100);
+            println!("[coroutine] back");
+            null()
+        }
+    }
+
     #[test]
     fn with_delay() {
         let mut scheduler = Scheduler::new();
         scheduler
-            .submit(
-                |yielder, _input| {
-                    println!("[coroutine] delay");
-                    yielder.delay((), 100);
-                    println!("[coroutine] back");
-                    null()
-                },
-                null(),
-                4096,
-            )
+            .submit(delay(), null(), 4096)
             .expect("submit failed !");
         scheduler.try_schedule().expect("try_schedule failed !");
         std::thread::sleep(Duration::from_millis(100));
@@ -361,16 +376,7 @@ mod tests {
     fn timed_schedule() {
         let mut scheduler = Scheduler::new();
         scheduler
-            .submit(
-                |yielder, _input| {
-                    println!("[coroutine] delay");
-                    yielder.delay((), 100);
-                    println!("[coroutine] back");
-                    null()
-                },
-                null(),
-                4096,
-            )
+            .submit(delay(), null(), 4096)
             .expect("submit failed !");
         scheduler
             .timed_schedule(Duration::from_millis(200))

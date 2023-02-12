@@ -196,6 +196,9 @@ impl<'a, Param, Yield, Return> OpenCoroutine<'a, Param, Yield, Return> {
                 Monitor::clean_task(Monitor::signal_time());
                 if let Some(scheduler) = self.get_scheduler() {
                     self.result.replace(MaybeUninit::new(ManuallyDrop::new(r)));
+                    Scheduler::save_result(unsafe {
+                        std::ptr::read_unaligned(std::mem::transmute(self))
+                    });
                     //执行下一个用户协程
                     unsafe { (*scheduler).do_schedule() };
                     unreachable!("should not execute to here !")
