@@ -259,9 +259,13 @@ impl Scheduler {
         }
     }
 
-    pub(crate) fn resume(&mut self, co_name: &'static str) -> std::io::Result<()> {
+    pub(crate) fn resume(&mut self, co_name: usize) -> std::io::Result<()> {
         unsafe {
-            if let Some(co) = SYSTEM_CALL_TABLE.remove(&co_name) {
+            let co_name = Box::leak(Box::new(std::ptr::read_unaligned(
+                co_name as *const c_void as *const _ as *const String,
+            )))
+            .as_str();
+            if let Some(co) = SYSTEM_CALL_TABLE.remove(co_name) {
                 self.ready.push_back(co);
             }
         }

@@ -1,4 +1,4 @@
-// use crate::EventLoop;
+use crate::EventLoop;
 use once_cell::sync::{Lazy, OnceCell};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,8 +54,8 @@ impl Monitor {
                     #[cfg(all(unix, feature = "preemptive-schedule"))]
                     monitor.signal();
                     //尽量至少wait 1ms
-                    // let timeout_time = timer_utils::add_timeout_time(1_999_999);
-                    // let _ = EventLoop::round_robin_timeout_schedule(timeout_time);
+                    let timeout_time = timer_utils::add_timeout_time(1_999_999);
+                    let _ = EventLoop::round_robin_timeout_schedule(timeout_time);
                 }
             })
         });
