@@ -22,3 +22,13 @@ rayon = "1.6.1"
 object-collection = "0.0.5"
 timer-utils = "0.0.4"
 work-steal-queue = "0.1.1"
+
+[features]
+default = []
+
+# Provide preemptive scheduling implementation.
+# Not enable for default,
+preemptive-schedule = []
+
+# Enable all features
+full = ["preemptive-schedule"]

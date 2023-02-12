@@ -5,6 +5,7 @@ use std::fmt::{Debug, Formatter};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use uuid::Uuid;
 
+use crate::monitor::Monitor;
 pub use corosensei::stack::*;
 pub use corosensei::*;
 
@@ -170,11 +171,14 @@ impl<'a, Param, Yield, Return> OpenCoroutine<'a, Param, Yield, Return> {
                 self.set_status(Status::Finished);
                 OpenCoroutine::<Param, Yield, Return>::clean_current();
                 OpenYielder::<Param, Yield>::clean_yielder();
-                // todo 清理抢占调度
-                if let Some(_scheduler) = self.get_scheduler() {
+                //还没执行到10ms就返回了，此时需要清理signal
+                //否则下一个协程执行不到10ms就被抢占调度了
+                Monitor::clean_task(Monitor::signal_time());
+                if let Some(scheduler) = self.get_scheduler() {
                     self.result.replace(MaybeUninit::new(ManuallyDrop::new(r)));
                     //执行下一个用户协程
-                    todo!()
+                    unsafe { (*scheduler).do_schedule() };
+                    unreachable!("should not execute to here !")
                 } else {
                     CoroutineResult::Return(r)
                 }
