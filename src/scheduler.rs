@@ -4,8 +4,8 @@ use work_steal_queue::LocalQueue;
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct Scheduler<'s> {
+pub struct Scheduler {
     id: usize,
-    ready: LocalQueue<'s, &'static mut c_void>,
+    ready: LocalQueue<'static, &'static mut c_void>,
     scheduling: AtomicBool,
 }

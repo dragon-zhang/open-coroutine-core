@@ -9,18 +9,16 @@ license = "LGPL-3.0 OR Apache-2.0"
 
 [dependencies]
 corosensei = "0.1.3"
-
-libc = "0.2.137"
-once_cell = "1.13.0"
-scopeguard = "1.1.0"
-num_cpus = "1.14.0"
-rayon = "1.6.1"
-object-collection = "0.0.4"
-timer-utils = "0.0.3"
-work-steal-queue = "0.1.1"
-
 uuid = { version = "1.3.0", features = [
     "v4",
     "fast-rng",
     "macro-diagnostics",
 ] }
+libc = "0.2.137"
+once_cell = "1.13.0"
+scopeguard = "1.1.0"
+num_cpus = "1.14.0"
+rayon = "1.6.1"
+object-collection = "0.0.5"
+timer-utils = "0.0.4"
+work-steal-queue = "0.1.1"
