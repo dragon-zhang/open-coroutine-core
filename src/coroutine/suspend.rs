@@ -10,10 +10,10 @@ thread_local! {
 }
 
 #[repr(transparent)]
-pub struct Suspender<'y, Y, R = ()>(Co<'y, Y, R>);
+pub struct Suspender<'y, Y, P = ()>(Co<'y, Y, P>);
 
-impl<'y, Y, R> Suspender<'y, Y, R> {
-    pub(crate) fn new(co: Co<'y, Y, R>) -> Self {
+impl<'y, Y, P> Suspender<'y, Y, P> {
+    pub(crate) fn new(co: Co<'y, Y, P>) -> Self {
         Suspender(co)
     }
 
@@ -22,15 +22,15 @@ impl<'y, Y, R> Suspender<'y, Y, R> {
     /// This function will switch control back to the original caller of
     /// [`Coroutine::resume`]. This function will then return once the
     /// [`Coroutine::resume`] function is called again.
-    pub async fn suspend(&self, val: Y) -> R {
-        let suspender = Suspender::<Y, R>::current();
-        Suspender::<Y, R>::clean_current();
+    pub async fn suspend(&self, val: Y) -> P {
+        let suspender = Suspender::<Y, P>::current();
+        Suspender::<Y, P>::clean_current();
         let r = self.0.yield_(val).await;
         unsafe { Suspender::init_current(&mut *suspender) };
         r
     }
 
-    pub async fn delay(&self, val: Y, ms_time: u64) -> R {
+    pub async fn delay(&self, val: Y, ms_time: u64) -> P {
         self.delay_ns(
             val,
             match ms_time.checked_mul(1_000_000) {
@@ -41,18 +41,18 @@ impl<'y, Y, R> Suspender<'y, Y, R> {
         .await
     }
 
-    pub async fn delay_ns(&self, val: Y, ns_time: u64) -> R {
-        Suspender::<Y, R>::init_delay_time(ns_time);
+    pub async fn delay_ns(&self, val: Y, ns_time: u64) -> P {
+        Suspender::<Y, P>::init_delay_time(ns_time);
         self.suspend(val).await
     }
 
-    fn init_current(yielder: &mut Suspender<Y, R>) {
+    fn init_current(yielder: &mut Suspender<Y, P>) {
         YIELDER.with(|boxed| {
             *boxed.borrow_mut() = yielder as *mut _ as *mut c_void;
         });
     }
 
-    pub fn current<'s>() -> *mut Suspender<'s, Y, R> {
+    pub fn current<'s>() -> *mut Suspender<'s, Y, P> {
         YIELDER.with(|boxed| unsafe { std::mem::transmute(*boxed.borrow_mut()) })
     }
 
@@ -74,8 +74,8 @@ impl<'y, Y, R> Suspender<'y, Y, R> {
         DELAY_TIME.with(|boxed| *boxed.borrow_mut() = 0)
     }
 
-    pub(crate) async fn syscall(&self, val: Y) -> R {
-        Suspender::<Y, R>::init_syscall_flag();
+    pub(crate) async fn syscall(&self, val: Y) -> P {
+        Suspender::<Y, P>::init_syscall_flag();
         self.suspend(val).await
     }
 
@@ -94,7 +94,7 @@ impl<'y, Y, R> Suspender<'y, Y, R> {
     }
 }
 
-impl<Y, R> Debug for Suspender<'_, Y, R> {
+impl<Y, P> Debug for Suspender<'_, Y, P> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Suspender").finish()
     }

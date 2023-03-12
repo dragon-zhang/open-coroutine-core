@@ -29,15 +29,15 @@ pub enum State {
 }
 
 #[repr(C)]
-pub struct ScopedCoroutine<'c, 's, Y, R> {
+pub struct ScopedCoroutine<'c, 's, P, Y, R> {
     name: &'c str,
-    sp: RefCell<Gen<'c, Y, R, Box<dyn Future<Output = R> + Unpin>>>,
+    sp: RefCell<Gen<'c, Y, P, Box<dyn Future<Output = R> + Unpin>>>,
     state: Cell<State>,
     scheduler: RefCell<Option<&'c Scheduler<'s>>>,
 }
 
-impl<'c, 's, Y, R> ScopedCoroutine<'c, 's, Y, R> {
-    fn new(name: Box<str>, generator: Gen<'c, Y, R, Box<dyn Future<Output = R> + Unpin>>) -> Self {
+impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
+    fn new(name: Box<str>, generator: Gen<'c, Y, P, Box<dyn Future<Output = R> + Unpin>>) -> Self {
         ScopedCoroutine {
             name: Box::leak(name),
             sp: RefCell::new(generator),
@@ -46,18 +46,18 @@ impl<'c, 's, Y, R> ScopedCoroutine<'c, 's, Y, R> {
         }
     }
 
-    pub fn resume_with(&self, arg: R) -> GeneratorState<Y, R> {
+    pub fn resume_with(&self, arg: P) -> GeneratorState<Y, R> {
         self.set_state(State::Running);
         let mut binding = self.sp.borrow_mut();
         let mut sp = Pin::new(binding.deref_mut());
         match sp.resume_with(arg) {
             GeneratorState::Yielded(y) => {
-                if Suspender::<Y, R>::syscall_flag() {
+                if Suspender::<Y, P>::syscall_flag() {
                     self.set_state(State::SystemCall);
-                    Suspender::<Y, R>::clean_syscall_flag();
+                    Suspender::<Y, P>::clean_syscall_flag();
                 } else {
-                    self.set_state(State::Suspend(Suspender::<Y, R>::delay_time()));
-                    Suspender::<Y, R>::clean_delay();
+                    self.set_state(State::Suspend(Suspender::<Y, P>::delay_time()));
+                    Suspender::<Y, P>::clean_delay();
                 }
                 GeneratorState::Yielded(y)
             }
@@ -89,7 +89,7 @@ impl<'c, 's, Y, R> ScopedCoroutine<'c, 's, Y, R> {
     }
 }
 
-impl<Y, R> Debug for ScopedCoroutine<'_, '_, Y, R> {
+impl<P, Y, R> Debug for ScopedCoroutine<'_, '_, P, Y, R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Coroutine")
             .field("name", &self.name)
@@ -113,16 +113,15 @@ mod tests {
         };
         let gen = {
             let shelf = Box::leak(Box::new(Shelf::new()));
-            ScopedCoroutine::new(Box::from("test"), unsafe {
-                Gen::new(shelf, |co| {
-                    Box::new(Box::pin(async move {
-                        println!("{}", f(co).await);
-                    }))
-                })
+            ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), unsafe {
+                Gen::new(shelf, |co| Box::new(Box::pin(async move { f(co).await })))
             })
         };
         assert_eq!(gen.resume_with(()), GeneratorState::Yielded(10));
         assert_eq!(gen.resume_with(()), GeneratorState::Yielded(20));
-        assert_eq!(gen.resume_with(()), GeneratorState::Complete(()));
+        match gen.resume_with(()) {
+            GeneratorState::Yielded(_) => panic!(),
+            GeneratorState::Complete(r) => println!("{}", r),
+        };
     }
 }
