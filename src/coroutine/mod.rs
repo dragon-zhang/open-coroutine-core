@@ -1,12 +1,13 @@
 use crate::coroutine::suspend::Suspender;
 use crate::scheduler::Scheduler;
+use genawaiter::stack::{Co, Gen, Shelf};
 use std::cell::{Cell, RefCell};
 use std::fmt::{Debug, Formatter};
+use std::future::Future;
 use std::ops::DerefMut;
 use std::pin::Pin;
 
-use genawaiter::stack::Gen;
-pub use genawaiter::{stack::Co, GeneratorState};
+pub use genawaiter::GeneratorState;
 
 pub mod suspend;
 
@@ -28,51 +29,16 @@ pub enum State {
 }
 
 #[repr(C)]
-pub struct Coroutine<'c, 's, Y, R, F>
-where
-    F: genawaiter::Coroutine<Yield = Y, Resume = (), Return = R>,
-{
+pub struct ScopedCoroutine<'c, 's, Y, R> {
     name: &'c str,
-    sp: RefCell<F>,
+    sp: RefCell<Gen<'c, Y, R, Box<dyn Future<Output = R> + Unpin>>>,
     state: Cell<State>,
     scheduler: RefCell<Option<&'c Scheduler<'s>>>,
 }
 
-#[macro_export]
-macro_rules! co {
-    // Safety: The goal here is to ensure the safety invariants of `Gen::new`, i.e.,
-    // the lifetime of the `Co` argument (in `$producer`) must not outlive `shelf`
-    // or `generator`.
-    //
-    // We create two variables, `shelf` and `generator`, which cannot be named by
-    // user-land code (because of macro hygiene). Because they are declared in the
-    // same scope, and cannot be dropped before the end of the scope (because they
-    // cannot be named), they have equivalent lifetimes. The type signature of
-    // `Gen::new` ties the lifetime of `co` to that of `shelf`. This means it has
-    // the same lifetime as `generator`, and so the invariant of `Gen::new` cannot
-    // be violated.
-    ($var_name:ident, $func:expr $(,)?) => {
-        let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
-        let generator =
-            unsafe { Gen::new(shelf, |co| async move { ($func)(Suspender::new(co)).await }) };
-        let mut coroutine = Coroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), generator);
-        let $var_name = &mut coroutine;
-    };
-    ($var_name:ident, $name:literal, $func:expr $(,)?) => {
-        let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
-        let generator =
-            unsafe { Gen::new(shelf, |co| async move { ($func)(Suspender::new(co)).await }) };
-        let mut coroutine = Coroutine::new(Box::from($name), generator);
-        let $var_name = &mut coroutine;
-    };
-}
-
-impl<'c, 's, Y, R, F> Coroutine<'c, 's, Y, R, F>
-where
-    F: genawaiter::Coroutine<Yield = Y, Resume = (), Return = R> + Unpin,
-{
-    fn new(name: Box<str>, generator: F) -> Self {
-        Coroutine {
+impl<'c, 's, Y, R> ScopedCoroutine<'c, 's, Y, R> {
+    fn new(name: Box<str>, generator: Gen<'c, Y, R, Box<dyn Future<Output = R> + Unpin>>) -> Self {
+        ScopedCoroutine {
             name: Box::leak(name),
             sp: RefCell::new(generator),
             state: Cell::new(State::Created),
@@ -80,11 +46,11 @@ where
         }
     }
 
-    pub fn resume(&self) -> GeneratorState<Y, R> {
+    pub fn resume_with(&self, arg: R) -> GeneratorState<Y, R> {
         self.set_state(State::Running);
         let mut binding = self.sp.borrow_mut();
-        let sp = Pin::new(binding.deref_mut());
-        match sp.resume_with(()) {
+        let mut sp = Pin::new(binding.deref_mut());
+        match sp.resume_with(arg) {
             GeneratorState::Yielded(y) => {
                 if Suspender::<Y, R>::syscall_flag() {
                     self.set_state(State::SystemCall);
@@ -123,10 +89,7 @@ where
     }
 }
 
-impl<Y, R, F> Debug for Coroutine<'_, '_, Y, R, F>
-where
-    F: genawaiter::Coroutine<Yield = Y, Resume = (), Return = R>,
-{
+impl<Y, R> Debug for ScopedCoroutine<'_, '_, Y, R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Coroutine")
             .field("name", &self.name)
@@ -138,44 +101,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use genawaiter::stack::let_gen_using;
 
     #[test]
     fn base() {
-        let s = "1";
-        let f = || async move {
+        let s = Box::new(1);
+        let f = |co: Co<'static, _, _>| async move {
+            co.yield_(10).await;
             print!("{} ", s);
+            co.yield_(20).await;
             "2"
         };
-        let_gen_using!(gen, |co| async move {
-            co.yield_(10).await;
-            println!("{}", f().await);
-            co.yield_(20).await;
-        });
-        assert_eq!(gen.resume(), GeneratorState::Yielded(10));
-        assert_eq!(gen.resume(), GeneratorState::Yielded(20));
-        assert_eq!(gen.resume(), GeneratorState::Complete(()));
-    }
-
-    #[test]
-    fn test_return() {
-        co!(co, |_| async move {});
-        let co = co as &mut Coroutine<'_, '_, (), _, _>;
-        assert_eq!(GeneratorState::Complete(()), co.resume());
-    }
-
-    #[test]
-    fn test_yield() {
-        let s = "hello";
-        co!(c, "test", |co: Suspender<'static, _, _>| async move {
-            co.suspend(10).await;
-            println!("{}", s);
-            co.suspend(20).await;
-            "world"
-        });
-        assert_eq!(c.resume(), GeneratorState::Yielded(10));
-        assert_eq!(c.resume(), GeneratorState::Yielded(20));
-        assert_eq!(c.resume(), GeneratorState::Complete("world"));
-        assert_eq!(c.get_name(), "test");
+        let gen = {
+            let shelf = Box::leak(Box::new(Shelf::new()));
+            ScopedCoroutine::new(Box::from("test"), unsafe {
+                Gen::new(shelf, |co| {
+                    Box::new(Box::pin(async move {
+                        println!("{}", f(co).await);
+                    }))
+                })
+            })
+        };
+        assert_eq!(gen.resume_with(()), GeneratorState::Yielded(10));
+        assert_eq!(gen.resume_with(()), GeneratorState::Yielded(20));
+        assert_eq!(gen.resume_with(()), GeneratorState::Complete(()));
     }
 }
