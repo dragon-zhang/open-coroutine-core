@@ -28,6 +28,26 @@ pub enum State {
     Finished,
 }
 
+#[macro_export]
+macro_rules! co {
+    ($f:expr $(,)?) => {{
+        let shelf = Box::leak(Box::new(Shelf::new()));
+        ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), unsafe {
+            Gen::new(shelf, |co| {
+                Box::new(Box::pin(async move { ($f)(Suspender::new(co)).await }))
+            })
+        })
+    }};
+    ($name:literal, $f:expr $(,)?) => {{
+        let shelf = Box::leak(Box::new(Shelf::new()));
+        ScopedCoroutine::new(Box::from($name), unsafe {
+            Gen::new(shelf, |co| {
+                Box::new(Box::pin(async move { ($f)(Suspender::new(co)).await }))
+            })
+        })
+    }};
+}
+
 #[repr(C)]
 pub struct ScopedCoroutine<'c, 's, P, Y, R> {
     name: &'c str,
@@ -111,17 +131,38 @@ mod tests {
             co.yield_(20).await;
             "2"
         };
-        let gen = {
+        let co = {
             let shelf = Box::leak(Box::new(Shelf::new()));
             ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), unsafe {
                 Gen::new(shelf, |co| Box::new(Box::pin(async move { f(co).await })))
             })
         };
-        assert_eq!(gen.resume_with(()), GeneratorState::Yielded(10));
-        assert_eq!(gen.resume_with(()), GeneratorState::Yielded(20));
-        match gen.resume_with(()) {
+        assert_eq!(co.resume_with(()), GeneratorState::Yielded(10));
+        assert_eq!(co.resume_with(()), GeneratorState::Yielded(20));
+        match co.resume_with(()) {
             GeneratorState::Yielded(_) => panic!(),
             GeneratorState::Complete(r) => println!("{}", r),
         };
+    }
+
+    #[test]
+    fn test_return() {
+        let co: ScopedCoroutine<_, (), _> = co!(|_| async move {});
+        assert_eq!(GeneratorState::Complete(()), co.resume_with(()));
+    }
+
+    #[test]
+    fn test_yield() {
+        let s = "hello";
+        let co = co!("test", |co: Suspender<'static, _, _>| async move {
+            co.suspend(10).await;
+            println!("{}", s);
+            co.suspend(20).await;
+            "world"
+        });
+        assert_eq!(co.resume_with(()), GeneratorState::Yielded(10));
+        assert_eq!(co.resume_with(()), GeneratorState::Yielded(20));
+        assert_eq!(co.resume_with(()), GeneratorState::Complete("world"));
+        assert_eq!(co.get_name(), "test");
     }
 }
