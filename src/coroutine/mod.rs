@@ -1,6 +1,6 @@
 use crate::coroutine::suspend::Suspender;
 use crate::scheduler::Scheduler;
-use genawaiter::stack::Gen;
+use genawaiter::stack::{Gen, Shelf};
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::fmt::{Debug, Formatter};
@@ -31,22 +31,12 @@ pub enum State {
 
 #[macro_export]
 macro_rules! co {
-    ($f:expr $(,)?) => {{
-        let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
-        ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), unsafe {
-            genawaiter::stack::Gen::new(shelf, |co| {
-                Box::new(Box::pin(async move { ($f)(Suspender::new(co)).await }))
-            })
-        })
-    }};
-    ($name:literal, $f:expr $(,)?) => {{
-        let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
-        ScopedCoroutine::new(Box::from($name), unsafe {
-            genawaiter::stack::Gen::new(shelf, |co| {
-                Box::new(Box::pin(async move { ($f)(Suspender::new(co)).await }))
-            })
-        })
-    }};
+    ($f:expr $(,)?) => {
+        $crate::coroutine::ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), $f)
+    };
+    ($name:literal, $f:expr $(,)?) => {
+        $crate::coroutine::ScopedCoroutine::new(Box::from($name), $f)
+    };
 }
 
 thread_local! {
@@ -63,19 +53,28 @@ pub struct ScopedCoroutine<'c, 's, P, Y, R> {
 
 unsafe impl<P, Y, R> Send for ScopedCoroutine<'_, '_, P, Y, R> {}
 
-impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
-    pub(crate) fn new(
-        name: Box<str>,
-        generator: Gen<'c, Y, P, Box<dyn Future<Output = R> + Unpin>>,
-    ) -> Self {
+impl<'c, P: 'static, Y: 'static, R: 'static> ScopedCoroutine<'c, '_, P, Y, R> {
+    pub fn new<F>(name: Box<str>, f: impl FnOnce(Suspender<'c, Y, P>) -> F + 'static) -> Self
+    where
+        F: Future<Output = R>,
+    {
+        let shelf = Box::leak(Box::new(Shelf::new()));
         ScopedCoroutine {
             name: Box::leak(name),
-            sp: RefCell::new(generator),
+            sp: RefCell::new(unsafe {
+                genawaiter::stack::Gen::new(shelf, |co| {
+                    Box::new(Box::pin(async move {
+                        (f)(crate::coroutine::suspend::Suspender::new(co)).await
+                    }))
+                })
+            }),
             state: Cell::new(State::Created),
             scheduler: RefCell::new(None),
         }
     }
+}
 
+impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
     fn init_current(coroutine: &ScopedCoroutine<'c, 's, P, Y, R>) {
         COROUTINE.with(|boxed| {
             *boxed.borrow_mut() = coroutine as *const _ as *const c_void;
@@ -163,20 +162,15 @@ mod tests {
     #[test]
     fn base() {
         let s = Box::new(1);
-        let f = |co: Suspender<'static, _, _>| async move {
-            co.suspend(10).await;
-            print!("{} ", s);
-            co.suspend(20).await;
-            "2"
-        };
-        let co = {
-            let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
-            ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), unsafe {
-                genawaiter::stack::Gen::new(shelf, |co| {
-                    Box::new(Box::pin(async move { f(Suspender::new(co)).await }))
-                })
-            })
-        };
+        let co = ScopedCoroutine::new(
+            Box::from(uuid::Uuid::new_v4().to_string()),
+            |co: Suspender<'static, _, _>| async move {
+                co.suspend(10).await;
+                print!("{} ", s);
+                co.suspend(20).await;
+                "2"
+            },
+        );
         assert_eq!(co.resume(), GeneratorState::Yielded(10));
         assert_eq!(co.resume(), GeneratorState::Yielded(20));
         match co.resume() {
@@ -194,7 +188,7 @@ mod tests {
     #[test]
     fn test_yield() {
         let s = "hello";
-        let co = co!("test", |co: Suspender<'static, _, _>| async move {
+        let co = co!("test", move |co: Suspender<'static, _, _>| async move {
             co.suspend(10).await;
             println!("{}", s);
             co.suspend(20).await;
