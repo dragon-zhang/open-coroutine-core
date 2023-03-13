@@ -194,6 +194,14 @@ mod tests {
     }
 
     #[test]
+    fn test_yield_once() {
+        let co: ScopedCoroutine<_, (), _> = co!(|co: Suspender<'static, _, _>| async move {
+            co.suspend(()).await;
+        });
+        assert_eq!(GeneratorState::Yielded(()), co.resume());
+    }
+
+    #[test]
     fn test_yield() {
         let s = "hello";
         let co = co!("test", move |co: Suspender<'static, _, _>| async move {
