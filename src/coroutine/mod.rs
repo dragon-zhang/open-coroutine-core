@@ -64,7 +64,9 @@ impl<'c, P: 'static, Y: 'static, R: 'static> ScopedCoroutine<'c, '_, P, Y, R> {
             sp: RefCell::new(unsafe {
                 genawaiter::stack::Gen::new(shelf, |co| {
                     Box::new(Box::pin(async move {
-                        (f)(crate::coroutine::suspend::Suspender::new(co)).await
+                        let mut suspender = Suspender::new(co);
+                        Suspender::init_current(&mut suspender);
+                        (f)(suspender).await
                     }))
                 })
             }),

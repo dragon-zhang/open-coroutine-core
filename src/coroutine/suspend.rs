@@ -46,7 +46,7 @@ impl<'y, Y, P> Suspender<'y, Y, P> {
         self.suspend(val).await
     }
 
-    fn init_current(yielder: &mut Suspender<Y, P>) {
+    pub(crate) fn init_current(yielder: &mut Suspender<Y, P>) {
         YIELDER.with(|boxed| {
             *boxed.borrow_mut() = yielder as *mut _ as *mut c_void;
         });
