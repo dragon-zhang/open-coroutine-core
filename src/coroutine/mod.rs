@@ -1,7 +1,8 @@
 use crate::coroutine::suspend::Suspender;
 use crate::scheduler::Scheduler;
-use genawaiter::stack::{Co, Gen, Shelf};
+use genawaiter::stack::Gen;
 use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::ops::DerefMut;
@@ -31,21 +32,25 @@ pub enum State {
 #[macro_export]
 macro_rules! co {
     ($f:expr $(,)?) => {{
-        let shelf = Box::leak(Box::new(Shelf::new()));
+        let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
         ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), unsafe {
-            Gen::new(shelf, |co| {
+            genawaiter::stack::Gen::new(shelf, |co| {
                 Box::new(Box::pin(async move { ($f)(Suspender::new(co)).await }))
             })
         })
     }};
     ($name:literal, $f:expr $(,)?) => {{
-        let shelf = Box::leak(Box::new(Shelf::new()));
+        let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
         ScopedCoroutine::new(Box::from($name), unsafe {
-            Gen::new(shelf, |co| {
+            genawaiter::stack::Gen::new(shelf, |co| {
                 Box::new(Box::pin(async move { ($f)(Suspender::new(co)).await }))
             })
         })
     }};
+}
+
+thread_local! {
+    static COROUTINE: Box<RefCell<*const c_void>> = Box::new(RefCell::new(std::ptr::null()));
 }
 
 #[repr(C)]
@@ -56,8 +61,13 @@ pub struct ScopedCoroutine<'c, 's, P, Y, R> {
     scheduler: RefCell<Option<&'c Scheduler<'s>>>,
 }
 
+unsafe impl<P, Y, R> Send for ScopedCoroutine<'_, '_, P, Y, R> {}
+
 impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
-    fn new(name: Box<str>, generator: Gen<'c, Y, P, Box<dyn Future<Output = R> + Unpin>>) -> Self {
+    pub(crate) fn new(
+        name: Box<str>,
+        generator: Gen<'c, Y, P, Box<dyn Future<Output = R> + Unpin>>,
+    ) -> Self {
         ScopedCoroutine {
             name: Box::leak(name),
             sp: RefCell::new(generator),
@@ -66,8 +76,30 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
         }
     }
 
+    fn init_current(coroutine: &ScopedCoroutine<'c, 's, P, Y, R>) {
+        COROUTINE.with(|boxed| {
+            *boxed.borrow_mut() = coroutine as *const _ as *const c_void;
+        })
+    }
+
+    pub fn current() -> Option<&'c ScopedCoroutine<'c, 's, P, Y, R>> {
+        COROUTINE.with(|boxed| {
+            let ptr = *boxed.borrow_mut();
+            if ptr.is_null() {
+                None
+            } else {
+                Some(unsafe { &*(ptr as *const ScopedCoroutine<'c, 's, P, Y, R>) })
+            }
+        })
+    }
+
+    fn clean_current() {
+        COROUTINE.with(|boxed| *boxed.borrow_mut() = std::ptr::null())
+    }
+
     pub fn resume_with(&self, arg: P) -> GeneratorState<Y, R> {
         self.set_state(State::Running);
+        ScopedCoroutine::init_current(self);
         let mut binding = self.sp.borrow_mut();
         let mut sp = Pin::new(binding.deref_mut());
         match sp.resume_with(arg) {
@@ -109,6 +141,12 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
     }
 }
 
+impl<Y, R> ScopedCoroutine<'_, '_, (), Y, R> {
+    pub fn resume(&self) -> GeneratorState<Y, R> {
+        self.resume_with(())
+    }
+}
+
 impl<P, Y, R> Debug for ScopedCoroutine<'_, '_, P, Y, R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Coroutine")
@@ -125,21 +163,23 @@ mod tests {
     #[test]
     fn base() {
         let s = Box::new(1);
-        let f = |co: Co<'static, _, _>| async move {
-            co.yield_(10).await;
+        let f = |co: Suspender<'static, _, _>| async move {
+            co.suspend(10).await;
             print!("{} ", s);
-            co.yield_(20).await;
+            co.suspend(20).await;
             "2"
         };
         let co = {
-            let shelf = Box::leak(Box::new(Shelf::new()));
+            let shelf = Box::leak(Box::new(genawaiter::stack::Shelf::new()));
             ScopedCoroutine::new(Box::from(uuid::Uuid::new_v4().to_string()), unsafe {
-                Gen::new(shelf, |co| Box::new(Box::pin(async move { f(co).await })))
+                genawaiter::stack::Gen::new(shelf, |co| {
+                    Box::new(Box::pin(async move { f(Suspender::new(co)).await }))
+                })
             })
         };
-        assert_eq!(co.resume_with(()), GeneratorState::Yielded(10));
-        assert_eq!(co.resume_with(()), GeneratorState::Yielded(20));
-        match co.resume_with(()) {
+        assert_eq!(co.resume(), GeneratorState::Yielded(10));
+        assert_eq!(co.resume(), GeneratorState::Yielded(20));
+        match co.resume() {
             GeneratorState::Yielded(_) => panic!(),
             GeneratorState::Complete(r) => println!("{}", r),
         };
@@ -148,7 +188,7 @@ mod tests {
     #[test]
     fn test_return() {
         let co: ScopedCoroutine<_, (), _> = co!(|_| async move {});
-        assert_eq!(GeneratorState::Complete(()), co.resume_with(()));
+        assert_eq!(GeneratorState::Complete(()), co.resume());
     }
 
     #[test]
@@ -160,9 +200,18 @@ mod tests {
             co.suspend(20).await;
             "world"
         });
-        assert_eq!(co.resume_with(()), GeneratorState::Yielded(10));
-        assert_eq!(co.resume_with(()), GeneratorState::Yielded(20));
-        assert_eq!(co.resume_with(()), GeneratorState::Complete("world"));
+        assert_eq!(co.resume(), GeneratorState::Yielded(10));
+        assert_eq!(co.resume(), GeneratorState::Yielded(20));
+        assert_eq!(co.resume(), GeneratorState::Complete("world"));
         assert_eq!(co.get_name(), "test");
+    }
+
+    #[test]
+    fn test_current() {
+        assert!(ScopedCoroutine::<(), (), ()>::current().is_none());
+        let co: ScopedCoroutine<_, (), _> = co!(|_| async move {
+            assert!(ScopedCoroutine::<(), (), ()>::current().is_some());
+        });
+        assert_eq!(GeneratorState::Complete(()), co.resume());
     }
 }
