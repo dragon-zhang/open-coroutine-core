@@ -102,6 +102,16 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
         let mut binding = self.sp.borrow_mut();
         let mut sp = Pin::new(binding.deref_mut());
         match sp.resume_with(arg) {
+            GeneratorState::Complete(r) => {
+                self.set_state(State::Finished);
+                if let Some(scheduler) = self.get_scheduler() {
+                    //执行下一个用户协程
+                    scheduler.do_schedule();
+                    unreachable!("should not execute to here !")
+                } else {
+                    GeneratorState::Complete(r)
+                }
+            }
             GeneratorState::Yielded(y) => {
                 if Suspender::<Y, P>::syscall_flag() {
                     self.set_state(State::SystemCall);
@@ -111,10 +121,6 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
                     Suspender::<Y, P>::clean_delay();
                 }
                 GeneratorState::Yielded(y)
-            }
-            GeneratorState::Complete(r) => {
-                self.set_state(State::Finished);
-                GeneratorState::Complete(r)
             }
         }
     }
