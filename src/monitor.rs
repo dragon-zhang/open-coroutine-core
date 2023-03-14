@@ -1,4 +1,5 @@
-use once_cell::sync::{Lazy, OnceCell};
+use once_cell::sync::OnceCell;
+use once_cell::unsync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -12,10 +13,6 @@ pub(crate) struct Monitor {
     task: timer_utils::TimerList<libc::pthread_t>,
     flag: AtomicBool,
 }
-
-unsafe impl Send for Monitor {}
-
-unsafe impl Sync for Monitor {}
 
 impl Monitor {
     #[allow(dead_code)]
