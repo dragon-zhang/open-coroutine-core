@@ -1,6 +1,6 @@
-use crate::co;
 use crate::coroutine::suspend::Suspender;
 use crate::coroutine::{GeneratorState, ScopedCoroutine, State};
+use crate::monitor::Monitor;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -68,15 +68,14 @@ impl<'s> Scheduler<'s> {
             }
             match self.ready.pop_front() {
                 Some(coroutine) => {
-                    // let start = timer_utils::get_timeout_time(Duration::from_millis(10));
-                    // Monitor::add_task(start);
-                    //see OpenCoroutine::child_context_func
+                    let start = timer_utils::get_timeout_time(Duration::from_millis(10));
+                    Monitor::add_task(start);
                     match coroutine.resume() {
                         GeneratorState::Yielded(()) => {
                             match coroutine.get_state() {
                                 State::SystemCall => {
                                     let name = Box::leak(Box::from(coroutine.get_name()));
-                                    unsafe { SYSTEM_CALL_TABLE.insert(name, coroutine) };
+                                    let _ = unsafe { SYSTEM_CALL_TABLE.insert(name, coroutine) };
                                 }
                                 State::Suspend(delay_time) => {
                                     if delay_time > 0 {
@@ -96,6 +95,9 @@ impl<'s> Scheduler<'s> {
                             let _ = unsafe { RESULT_TABLE.insert(name, r) };
                         }
                     };
+                    //还没执行到10ms就主动yield或者执行完毕了，此时需要清理signal
+                    //否则下一个协程执行不到10ms就会被抢占调度
+                    Monitor::clean_task(start);
                 }
                 None => return,
             }
@@ -153,6 +155,7 @@ impl Scheduler<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::co;
 
     fn result(result: usize) -> &'static mut c_void {
         unsafe { std::mem::transmute(result) }
@@ -232,5 +235,57 @@ mod tests {
         scheduler.try_schedule();
         std::thread::sleep(Duration::from_millis(100));
         scheduler.try_schedule();
+    }
+
+    #[cfg(all(unix, feature = "preemptive-schedule"))]
+    #[test]
+    fn preemptive_schedule() -> std::io::Result<()> {
+        use std::sync::{Arc, Condvar, Mutex};
+        static mut TEST_FLAG: bool = true;
+        let pair = Arc::new((Mutex::new(true), Condvar::new()));
+        let pair2 = Arc::clone(&pair);
+        let handler = std::thread::spawn(move || {
+            let scheduler = Box::leak(Box::new(Scheduler::new()));
+            let _ = scheduler.submit(|_| async move {
+                while unsafe { TEST_FLAG } {
+                    println!("loop");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result(1)
+            });
+            let _ = scheduler.submit(|_| async move {
+                unsafe { TEST_FLAG = false };
+                result(2)
+            });
+            scheduler.try_schedule();
+
+            let (lock, cvar) = &*pair2;
+            let mut pending = lock.lock().unwrap();
+            *pending = false;
+            // notify the condvar that the value has changed.
+            cvar.notify_one();
+        });
+
+        // wait for the thread to start up
+        let (lock, cvar) = &*pair;
+        let result = cvar
+            .wait_timeout_while(
+                lock.lock().unwrap(),
+                Duration::from_millis(3000),
+                |&mut pending| pending,
+            )
+            .unwrap();
+        if result.1.timed_out() {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "preemptive schedule failed",
+            ))
+        } else {
+            unsafe {
+                handler.join().unwrap();
+                assert!(!TEST_FLAG);
+            }
+            Ok(())
+        }
     }
 }

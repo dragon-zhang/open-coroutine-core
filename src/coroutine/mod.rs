@@ -121,6 +121,14 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
         }
     }
 
+    pub(crate) fn yields(&self) {
+        if let Some(scheduler) = self.get_scheduler() {
+            self.set_state(State::Suspend(0));
+            scheduler.try_schedule();
+            self.set_state(State::Running);
+        }
+    }
+
     pub fn get_name(&self) -> &str {
         self.name
     }
