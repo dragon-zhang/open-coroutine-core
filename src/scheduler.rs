@@ -17,6 +17,7 @@ static QUEUE: Lazy<WorkStealQueue<SchedulableCoroutine>> = Lazy::new(WorkStealQu
 
 static mut SUSPEND_TABLE: Lazy<TimerList<SchedulableCoroutine>> = Lazy::new(TimerList::new);
 
+#[allow(dead_code)]
 static mut SYSTEM_CALL_TABLE: Lazy<HashMap<&str, SchedulableCoroutine>> = Lazy::new(HashMap::new);
 
 static mut RESULT_TABLE: Lazy<HashMap<&str, &'static mut c_void>> = Lazy::new(HashMap::new);
@@ -73,10 +74,6 @@ impl<'s> Scheduler<'s> {
                     match coroutine.resume() {
                         GeneratorState::Yielded(()) => {
                             match coroutine.get_state() {
-                                State::SystemCall => {
-                                    let name = Box::leak(Box::from(coroutine.get_name()));
-                                    let _ = unsafe { SYSTEM_CALL_TABLE.insert(name, coroutine) };
-                                }
                                 State::Suspend(delay_time) => {
                                     if delay_time > 0 {
                                         //挂起协程到时间轮

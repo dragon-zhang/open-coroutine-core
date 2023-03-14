@@ -6,7 +6,6 @@ use std::fmt::{Debug, Formatter};
 thread_local! {
     static DELAY_TIME: Box<RefCell<u64>> = Box::new(RefCell::new(0));
     static YIELDER: Box<RefCell<*mut c_void>> = Box::new(RefCell::new(std::ptr::null_mut()));
-    static SYSCALL_FLAG: Box<RefCell<bool>> = Box::new(RefCell::new(false));
 }
 
 #[repr(transparent)]
@@ -72,25 +71,6 @@ impl<'y, Y, P> Suspender<'y, Y, P> {
 
     pub(crate) fn clean_delay() {
         DELAY_TIME.with(|boxed| *boxed.borrow_mut() = 0)
-    }
-
-    pub(crate) async fn syscall(&self, val: Y) -> P {
-        Suspender::<Y, P>::init_syscall_flag();
-        self.suspend(val).await
-    }
-
-    fn init_syscall_flag() {
-        SYSCALL_FLAG.with(|boxed| {
-            *boxed.borrow_mut() = true;
-        });
-    }
-
-    pub(crate) fn syscall_flag() -> bool {
-        SYSCALL_FLAG.with(|boxed| *boxed.borrow_mut())
-    }
-
-    pub(crate) fn clean_syscall_flag() {
-        SYSCALL_FLAG.with(|boxed| *boxed.borrow_mut() = false)
     }
 }
 

@@ -103,25 +103,22 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
         ScopedCoroutine::init_current(self);
         let mut binding = self.sp.borrow_mut();
         let mut sp = Pin::new(binding.deref_mut());
-        match sp.resume_with(arg) {
+        let state = match sp.resume_with(arg) {
             GeneratorState::Complete(r) => {
                 self.set_state(State::Finished);
                 GeneratorState::Complete(r)
             }
             GeneratorState::Yielded(y) => {
-                if Suspender::<Y, P>::syscall_flag() {
-                    self.set_state(State::SystemCall);
-                    Suspender::<Y, P>::clean_syscall_flag();
-                } else {
-                    self.set_state(State::Suspend(Suspender::<Y, P>::delay_time()));
-                    Suspender::<Y, P>::clean_delay();
-                }
+                self.set_state(State::Suspend(Suspender::<Y, P>::delay_time()));
+                Suspender::<Y, P>::clean_delay();
                 GeneratorState::Yielded(y)
             }
-        }
+        };
+        ScopedCoroutine::<P, Y, R>::clean_current();
+        state
     }
 
-    pub(crate) fn yields(&self) {
+    pub fn yields(&self) {
         if let Some(scheduler) = self.get_scheduler() {
             self.set_state(State::Suspend(0));
             scheduler.try_schedule();

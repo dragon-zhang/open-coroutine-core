@@ -66,6 +66,7 @@ impl Monitor {
     }
 
     /// 只在测试时使用
+    #[allow(dead_code)]
     pub(crate) fn stop() {
         Monitor::global().flag.store(false, Ordering::Release);
     }
