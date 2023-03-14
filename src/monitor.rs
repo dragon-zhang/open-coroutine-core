@@ -18,6 +18,7 @@ unsafe impl Send for Monitor {}
 unsafe impl Sync for Monitor {}
 
 impl Monitor {
+    #[allow(dead_code)]
     #[cfg(unix)]
     fn register_handler(sigurg_handler: libc::sighandler_t) {
         unsafe {
@@ -88,6 +89,7 @@ impl Monitor {
         }
     }
 
+    #[allow(unused_variables)]
     pub(crate) fn add_task(time: u64) {
         #[cfg(all(unix, feature = "preemptive-schedule"))]
         unsafe {
@@ -142,7 +144,7 @@ mod tests {
             println!("sigurg should not handle");
         }
         Monitor::register_handler(sigurg_handler as libc::sighandler_t);
-        // shield!();
+        let _ = shield!();
         let time = timer_utils::get_timeout_time(Duration::from_millis(1000));
         Monitor::add_task(time);
         std::thread::sleep(Duration::from_millis(1100));

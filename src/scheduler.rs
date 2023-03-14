@@ -20,7 +20,7 @@ static mut SUSPEND_TABLE: Lazy<TimerList<SchedulableCoroutine>> = Lazy::new(Time
 #[allow(dead_code)]
 static mut SYSTEM_CALL_TABLE: Lazy<HashMap<&str, SchedulableCoroutine>> = Lazy::new(HashMap::new);
 
-static mut RESULT_TABLE: Lazy<HashMap<&str, &'static mut c_void>> = Lazy::new(HashMap::new);
+static mut RESULT_TABLE: Lazy<HashMap<&str, SchedulableCoroutine>> = Lazy::new(HashMap::new);
 
 #[repr(C)]
 #[derive(Debug)]
@@ -88,8 +88,9 @@ impl<'s> Scheduler<'s> {
                             };
                         }
                         GeneratorState::Complete(r) => {
+                            let _ = coroutine.set_result(r);
                             let name = Box::leak(Box::from(coroutine.get_name()));
-                            let _ = unsafe { RESULT_TABLE.insert(name, r) };
+                            let _ = unsafe { RESULT_TABLE.insert(name, coroutine) };
                         }
                     };
                     //还没执行到10ms就主动yield或者执行完毕了，此时需要清理signal
@@ -124,7 +125,7 @@ impl<'s> Scheduler<'s> {
         }
     }
 
-    pub fn get_result(co_name: &'static str) -> Option<&'static mut c_void> {
+    pub fn get_result(co_name: &'static str) -> Option<SchedulableCoroutine> {
         unsafe { RESULT_TABLE.remove(&co_name) }
     }
 }
@@ -133,7 +134,7 @@ impl Scheduler<'static> {
     pub fn submit<F>(
         &'static self,
         f: impl FnOnce(Suspender<'static, (), ()>) -> F + 'static,
-    ) -> &str
+    ) -> &'static str
     where
         F: Future<Output = &'static mut c_void>,
     {

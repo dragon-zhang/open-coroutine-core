@@ -51,4 +51,43 @@ pub mod coroutine;
 
 pub mod scheduler;
 
+#[cfg(unix)]
+#[macro_export]
+macro_rules! shield {
+    () => {{
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            assert_eq!(libc::sigaddset(&mut set, libc::SIGURG), 0);
+            let mut oldset: libc::sigset_t = std::mem::zeroed();
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_SETMASK, &set, &mut oldset),
+                0
+            );
+            oldset
+        }
+    }};
+}
+
+#[cfg(unix)]
+#[macro_export]
+macro_rules! unbreakable {
+    ( $fn: expr ) => {{
+        let oldset = $crate::shield!();
+        unsafe {
+            let res = $fn;
+            libc::pthread_sigmask(libc::SIG_SETMASK, &oldset, std::ptr::null_mut());
+            res
+        }
+    }};
+}
+
 mod monitor;
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "l4re",
+    target_os = "android",
+    target_os = "emscripten"
+))]
+#[allow(dead_code)]
+pub mod epoll;
