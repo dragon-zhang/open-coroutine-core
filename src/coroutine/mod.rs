@@ -5,7 +5,6 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
-use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::DerefMut;
 use std::pin::Pin;
 
@@ -49,7 +48,6 @@ pub struct ScopedCoroutine<'c, 's, P, Y, R> {
     name: &'c str,
     sp: RefCell<Gen<'c, Y, P, Box<dyn Future<Output = R> + Unpin>>>,
     state: Cell<State>,
-    result: RefCell<MaybeUninit<ManuallyDrop<R>>>,
     scheduler: RefCell<Option<&'c Scheduler<'s>>>,
 }
 
@@ -73,7 +71,6 @@ impl<'c, P: 'static, Y: 'static, R: 'static> ScopedCoroutine<'c, '_, P, Y, R> {
                 })
             }),
             state: Cell::new(State::Created),
-            result: RefCell::new(MaybeUninit::uninit()),
             scheduler: RefCell::new(None),
         }
     }
@@ -138,22 +135,6 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
 
     pub fn is_finished(&self) -> bool {
         self.get_state() == State::Finished
-    }
-
-    pub(crate) fn set_result(&self, result: R) -> MaybeUninit<ManuallyDrop<R>> {
-        self.result
-            .replace(MaybeUninit::new(ManuallyDrop::new(result)))
-    }
-
-    pub fn get_result(&self) -> Option<R> {
-        if self.is_finished() {
-            unsafe {
-                let mut m = self.result.borrow().assume_init_read();
-                Some(ManuallyDrop::take(&mut m))
-            }
-        } else {
-            None
-        }
     }
 
     pub fn get_scheduler(&self) -> Option<&'c Scheduler<'s>> {

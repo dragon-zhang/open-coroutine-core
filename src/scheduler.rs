@@ -18,6 +18,8 @@ static mut SUSPEND_TABLE: Lazy<TimerList<SchedulableCoroutine>> = Lazy::new(Time
 
 static mut SYSTEM_CALL_TABLE: Lazy<HashMap<&str, SchedulableCoroutine>> = Lazy::new(HashMap::new);
 
+static mut RESULT_TABLE: Lazy<HashMap<&str, &'static mut c_void>> = Lazy::new(HashMap::new);
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct Scheduler<'s> {
@@ -50,7 +52,7 @@ impl<'s> Scheduler<'s> {
     }
 
     pub fn try_timeout_schedule(&self, timeout_time: u64) {
-        //self.check_ready().unwrap();
+        self.check_ready();
         loop {
             if timeout_time <= timer_utils::now() {
                 return;
@@ -63,21 +65,15 @@ impl<'s> Scheduler<'s> {
                     match coroutine.resume() {
                         GeneratorState::Yielded(()) => {
                             match coroutine.get_state() {
-                                State::SystemCall => unsafe {
-                                    SYSTEM_CALL_TABLE.insert(
-                                        Box::leak(Box::from(coroutine.get_name())),
-                                        coroutine,
-                                    );
-                                },
+                                State::SystemCall => {
+                                    let name = Box::leak(Box::from(coroutine.get_name()));
+                                    unsafe { SYSTEM_CALL_TABLE.insert(name, coroutine) };
+                                }
                                 State::Suspend(delay_time) => {
                                     if delay_time > 0 {
                                         //挂起协程到时间轮
-                                        unsafe {
-                                            SUSPEND_TABLE.insert(
-                                                timer_utils::add_timeout_time(delay_time),
-                                                coroutine,
-                                            )
-                                        };
+                                        let time = timer_utils::add_timeout_time(delay_time);
+                                        unsafe { SUSPEND_TABLE.insert(time, coroutine) };
                                     } else {
                                         //放入就绪队列尾部
                                         self.ready.push_back(coroutine);
@@ -87,13 +83,41 @@ impl<'s> Scheduler<'s> {
                             };
                         }
                         GeneratorState::Complete(r) => {
-                            let _ = coroutine.set_result(r);
+                            let name = Box::leak(Box::from(coroutine.get_name()));
+                            let _ = unsafe { RESULT_TABLE.insert(name, r) };
                         }
                     };
                 }
                 None => return,
             }
         }
+    }
+
+    fn check_ready(&self) {
+        unsafe {
+            for _ in 0..SUSPEND_TABLE.len() {
+                if let Some(entry) = SUSPEND_TABLE.front() {
+                    let exec_time = entry.get_time();
+                    if timer_utils::now() < exec_time {
+                        break;
+                    }
+                    //移动至"就绪"队列
+                    if let Some(mut entry) = SUSPEND_TABLE.pop_front() {
+                        for _ in 0..entry.len() {
+                            if let Some(coroutine) = entry.pop_front() {
+                                coroutine.set_state(State::Ready);
+                                //把到时间的协程加入就绪队列
+                                self.ready.push_back(coroutine);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn get_result(co_name: &'static str) -> Option<&'static mut c_void> {
+        unsafe { RESULT_TABLE.remove(&co_name) }
     }
 }
 
@@ -106,7 +130,7 @@ impl Scheduler<'static> {
         F: Future<Output = &'static mut c_void>,
     {
         let coroutine = SchedulableCoroutine::new(
-            Box::from(self.name.to_owned() + &Uuid::new_v4().to_string()),
+            Box::from(format!("{}@{}", self.name, Uuid::new_v4().to_string())),
             f,
         );
         coroutine.set_state(State::Ready);
@@ -166,6 +190,38 @@ mod tests {
             println!("2");
             result(2)
         });
+        scheduler.try_timeout_schedule(u64::MAX);
+    }
+
+    #[test]
+    fn with_suspend() {
+        let scheduler = Box::leak(Box::new(Scheduler::new()));
+        scheduler.submit(|yielder| async move {
+            println!("[coroutine1] suspend");
+            yielder.suspend(()).await;
+            println!("[coroutine1] back");
+            result(1)
+        });
+        scheduler.submit(|yielder| async move {
+            println!("[coroutine2] suspend");
+            yielder.suspend(()).await;
+            println!("[coroutine2] back");
+            result(2)
+        });
+        scheduler.try_timeout_schedule(u64::MAX);
+    }
+
+    #[test]
+    fn with_delay() {
+        let scheduler = Box::leak(Box::new(Scheduler::new()));
+        scheduler.submit(|yielder| async move {
+            println!("[coroutine] delay");
+            yielder.delay((), 100).await;
+            println!("[coroutine] back");
+            result(1)
+        });
+        scheduler.try_timeout_schedule(u64::MAX);
+        std::thread::sleep(std::time::Duration::from_millis(100));
         scheduler.try_timeout_schedule(u64::MAX);
     }
 }
