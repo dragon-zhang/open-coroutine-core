@@ -109,14 +109,7 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
         match sp.resume_with(arg) {
             GeneratorState::Complete(r) => {
                 self.set_state(State::Finished);
-                if let Some(scheduler) = self.get_scheduler() {
-                    self.result.replace(MaybeUninit::new(ManuallyDrop::new(r)));
-                    //执行下一个用户协程
-                    scheduler.do_schedule();
-                    unreachable!("should not execute to here !")
-                } else {
-                    GeneratorState::Complete(r)
-                }
+                GeneratorState::Complete(r)
             }
             GeneratorState::Yielded(y) => {
                 if Suspender::<Y, P>::syscall_flag() {
@@ -145,6 +138,11 @@ impl<'c, 's, P, Y, R> ScopedCoroutine<'c, 's, P, Y, R> {
 
     pub fn is_finished(&self) -> bool {
         self.get_state() == State::Finished
+    }
+
+    pub(crate) fn set_result(&self, result: R) -> MaybeUninit<ManuallyDrop<R>> {
+        self.result
+            .replace(MaybeUninit::new(ManuallyDrop::new(result)))
     }
 
     pub fn get_result(&self) -> Option<R> {
