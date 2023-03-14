@@ -5,6 +5,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::future::Future;
+use std::time::Duration;
 use timer_utils::TimerList;
 use uuid::Uuid;
 use work_steal_queue::{LocalQueue, WorkStealQueue};
@@ -49,6 +50,14 @@ impl<'s> Scheduler<'s> {
             name: Box::leak(Box::from(name)),
             ready: QUEUE.local_queue(),
         }
+    }
+
+    pub fn try_schedule(&self) {
+        self.try_timeout_schedule(Duration::MAX.as_secs())
+    }
+
+    pub fn try_timed_schedule(&self, time: Duration) {
+        self.try_timeout_schedule(timer_utils::get_timeout_time(time))
     }
 
     pub fn try_timeout_schedule(&self, timeout_time: u64) {
@@ -190,38 +199,38 @@ mod tests {
             println!("2");
             result(2)
         });
-        scheduler.try_timeout_schedule(u64::MAX);
+        scheduler.try_schedule();
     }
 
     #[test]
     fn with_suspend() {
         let scheduler = Box::leak(Box::new(Scheduler::new()));
-        scheduler.submit(|yielder| async move {
+        let _ = scheduler.submit(|yielder| async move {
             println!("[coroutine1] suspend");
             yielder.suspend(()).await;
             println!("[coroutine1] back");
             result(1)
         });
-        scheduler.submit(|yielder| async move {
+        let _ = scheduler.submit(|yielder| async move {
             println!("[coroutine2] suspend");
             yielder.suspend(()).await;
             println!("[coroutine2] back");
             result(2)
         });
-        scheduler.try_timeout_schedule(u64::MAX);
+        scheduler.try_schedule();
     }
 
     #[test]
     fn with_delay() {
         let scheduler = Box::leak(Box::new(Scheduler::new()));
-        scheduler.submit(|yielder| async move {
+        let _ = scheduler.submit(|yielder| async move {
             println!("[coroutine] delay");
             yielder.delay((), 100).await;
             println!("[coroutine] back");
             result(1)
         });
-        scheduler.try_timeout_schedule(u64::MAX);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        scheduler.try_timeout_schedule(u64::MAX);
+        scheduler.try_schedule();
+        std::thread::sleep(Duration::from_millis(100));
+        scheduler.try_schedule();
     }
 }
